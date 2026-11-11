@@ -1,0 +1,18 @@
+{
+  "name": "whatsapp-odoo-agent",
+  "version": "0.1.0",
+  "description": "Agente comercial por WhatsApp que crea leads en Odoo Enterprise (CRM)",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

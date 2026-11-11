@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: whatsapp-odoo-agent
+    runtime: node
+    plan: free # Cambiar a 'starter' si deseas evitar suspensión por inactividad o añadir un disco persistente
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: STATE_FILE
+        value: .data/state.json
+      - key: OUTBOX_INTERVAL_MS
+        value: "60000"
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: ODOO_URL
+        sync: false
+      - key: ODOO_DB
+        sync: false
+      - key: ODOO_EMAIL
+        sync: false
+      - key: ODOO_API_KEY
+        sync: false
+      - key: ODOO_TEAM_ID
+        sync: false
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: gpt-4o-mini
