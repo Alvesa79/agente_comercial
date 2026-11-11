@@ -56,8 +56,9 @@ router.get('/webhook', (req, res) => {
 });
 
 router.post('/webhook', async (req, res) => {
+  console.log('[webhook] Petición POST entrante desde Meta');
   if (!verifySignature(req)) {
-    console.warn('[webhook] Firma inválida, mensaje descartado');
+    console.warn('[webhook] Firma inválida: X-Hub-Signature-256 no coincide con WHATSAPP_APP_SECRET en Render');
     return res.sendStatus(401);
   }
 
