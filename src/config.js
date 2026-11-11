@@ -48,7 +48,7 @@ export const config = {
   },
 
   odoo: {
-    url: (required('ODOO_URL') || '').replace(/\/+$/, ''),
+    url: (required('ODOO_URL') || '').replace(/\/odoo\/?$/i, '').replace(/\/+$/, ''),
     db: required('ODOO_DB'),
     email: required('ODOO_EMAIL'),
     apiKey: required('ODOO_API_KEY'),
