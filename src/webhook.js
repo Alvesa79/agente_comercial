@@ -38,6 +38,12 @@ function extractMessage(body) {
           waMessageId: msg.id,
         };
       }
+      return {
+        from: msg.from,
+        text: null,
+        type: msg.type,
+        waMessageId: msg.id,
+      };
     }
   } catch {
     // estructura inesperada: se ignora y se responde 200 para evitar reintentos infinitos de Meta
@@ -77,6 +83,14 @@ router.post('/webhook', async (req, res) => {
   console.log(`[webhook] Mensaje entrante de ${message.from}`);
 
   void markAsRead(message.waMessageId).catch(() => {});
+
+  if (!message.text) {
+    await sendWhatsAppMessage(
+      message.from,
+      '¡Hola! Por el momento solo puedo procesar mensajes de texto. Por favor, escribe tu respuesta para poder ayudarte. 🙏'
+    );
+    return;
+  }
 
   try {
     const { leadId, handoff, createError, queued, reply } = await handleIncomingMessage(
