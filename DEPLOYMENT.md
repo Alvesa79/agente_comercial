@@ -13,6 +13,7 @@ de Odoo.sh, con asignación de leads a vendedores.
 1. [Arquitectura y regla de oro](#1-arquitectura-y-regla-de-oro)
 2. [Preparar Odoo.sh](#2-preparar-odoo-sh)
 3. [Elegir el host externo](#3-elegir-el-host-externo)
+   - [Despliegue en Render (paso a paso)](#31-despliegue-en-render-paso-a-paso)
 4. [Despliegue en un VPS (paso a paso)](#4-despliegue-en-un-vps-paso-a-paso)
 5. [HTTPS con Caddy](#5-https-con-caddy)
 6. [Alternativa sin Docker (systemd)](#6-alternativa-sin-docker-systemd)
@@ -138,6 +139,45 @@ Opciones válidas:
   instancia**.
 - Evita planes gratuitos que duermen el proceso: Meta reintenta y pierdes
   mensajes.
+
+### 3.1 Despliegue en Render (paso a paso)
+
+El proyecto incluye un archivo `render.yaml` preparado para Render Blueprints.
+
+#### Paso A: Subir el código a GitHub o GitLab
+1. En GitHub/GitLab, crea un nuevo repositorio privado (ej. `whatsapp-odoo-agent`).
+2. Vincula tu repositorio local y sube los cambios:
+   ```bash
+   git remote add origin <URL_DE_TU_REPOSITORIO_GIT>
+   git push -u origin main
+   ```
+
+#### Paso B: Crear el servicio en Render
+**Opción 1: Vía Blueprint (automática con `render.yaml`)**
+1. En [dashboard.render.com](https://dashboard.render.com), haz clic en **New +** → **Blueprint**.
+2. Conecta tu repositorio de GitHub/GitLab.
+3. Render detectará el archivo `render.yaml`. Te mostrará el servicio y los campos de variables de entorno para que los completes o los configures luego.
+4. Haz clic en **Apply**.
+
+**Opción 2: Como Web Service manual**
+1. En Render: **New +** → **Web Service**.
+2. Conecta tu repositorio.
+3. Configuración del servicio:
+   - **Name**: `whatsapp-odoo-agent` (o el que prefieras).
+   - **Runtime**: `Node`.
+   - **Build Command**: `npm install --omit=dev`
+   - **Start Command**: `npm start`
+   - **Plan**: `Starter` ($7/mo recomendado para producción) o `Free` (para pruebas).
+   - **Health Check Path**: `/health`
+4. En **Advanced** → **Environment Variables**, añade las variables descritas en la [sección 8](#8-variables-de-entorno).
+5. (Opcional en plan Starter): en **Disks**, añade un disco persistente montado en `/data` (1 GB) y define `STATE_FILE=/data/state.json`.
+
+#### Paso C: Configurar el Webhook en Meta
+Una vez desplegado, Render te asigna una URL HTTPS automática: `https://<tu-servicio>.onrender.com`.
+1. Entra al Meta for Developers Dashboard → Tu App WhatsApp → Configuración de Webhooks.
+2. **URL de devolución de llamada**: `https://<tu-servicio>.onrender.com/webhook`
+3. **Identificador de verificación**: El mismo valor que pusiste en `WHATSAPP_VERIFY_TOKEN`.
+4. Suscríbete al campo `messages`.
 
 ---
 
