@@ -1,125 +1,202 @@
-// Cliente JSON-RPC para Odoo (Enterprise y Community, v14+ probado hasta v17).
-// Usa el endpoint /jsonrpc con service "common" para autenticar y "object"
-// para execute_kw (buscar partners y crear leads de CRM).
+
+// Cliente JSON-2 para Odoo 19.
+// Conserva las funciones utilizadas por agent.js.
 
 import { config } from './config.js';
 
-let uidCache = null;
+const JSON2_URL = `${config.odoo.url}/json/2`;
 
-async function rpc(method, params) {
-  const res = await fetch(`${config.odoo.url}/jsonrpc`, {
+async function json2(model, method, params = {}) {
+  const { db, apiKey } = config.odoo;
+
+  if (!config.odoo.url || !db || !apiKey) {
+    throw new Error('Configuración de Odoo incompleta');
+  }
+
+  const response = await fetch(`${JSON2_URL}/${model}/${method}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      method,
-      params,
-      id: Date.now(),
-    }),
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `bearer ${apiKey}`,
+      'X-Odoo-Database': db,
+      'User-Agent': 'Conexus-WhatsApp-Agent/1.0',
+    },
+    body: JSON.stringify(params),
   });
-  if (!res.ok) {
-    throw new Error(`Odoo HTTP ${res.status}: ${await res.text()}`);
+
+  const raw = await response.text();
+
+  let result;
+  try {
+    result = raw ? JSON.parse(raw) : null;
+  } catch {
+    result = raw;
   }
-  const data = await res.json();
-  if (data.error) {
-    const err = data.error.data || {};
-    throw new Error(`Odoo ${data.error.code}: ${err.message || data.error.message}`);
+
+  if (!response.ok) {
+    const message =
+      result?.message ||
+      result?.arguments?.[0] ||
+      result?.name ||
+      raw ||
+      'Error desconocido';
+
+    throw new Error(`Odoo JSON-2 HTTP ${response.status}: ${message}`);
   }
-  return data.result;
+
+  return result;
 }
 
-/** Autentica en Odoo y guarda el uid en memoria. */
-export async function authenticate() {
-  if (uidCache) return uidCache;
-  const uid = await rpc('call', {
-    service: 'common',
-    method: 'login',
-    args: [config.odoo.db, config.odoo.email, config.odoo.apiKey],
-  });
-  if (!uid) throw new Error('Autenticación en Odoo fallida (revisa ODOO_URL, ODOO_DB, ODOO_EMAIL, ODOO_API_KEY)');
-  uidCache = uid;
-  return uid;
-}
-
-async function executeKw(model, method, args, kwargs = {}) {
-  const uid = await authenticate();
-  return rpc('call', {
-    service: 'object',
-    method: 'execute_kw',
-    args: [config.odoo.db, uid, config.odoo.apiKey, model, method, args, kwargs],
-  });
+function normalizeId(result) {
+  if (Number.isInteger(result)) return result;
+  if (Array.isArray(result)) return result[0] || false;
+  if (result && Number.isInteger(result.id)) return result.id;
+  return false;
 }
 
 /**
- * Busca un partner activo por teléfono/whatsapp (similar a lo que hace el
- * módulo WhatsApp de Odoo). Devuelve { id, name, userId } o false.
+ * Prueba de conexión JSON-2.
+ * Solo lectura.
+ */
+export async function testJson2Connection() {
+  const records = await json2('crm.lead', 'search_read', {
+    domain: [],
+    fields: ['id'],
+    limit: 1,
+  });
+
+  return {
+    connected: true,
+    recordsFound: records.length,
+  };
+}
+
+/**
+ * Busca un contacto por teléfono o móvil.
  */
 export async function findPartnerByPhone(phone) {
-  const digits = String(phone).replace(/[^\d+]/g, '');
+  const digits = String(phone || '').replace(/[^\d]/g, '');
   const suffix = digits.slice(-10);
-  let ids;
+
+  if (!suffix) return false;
+
+  let partners;
+
   try {
-    ids = await executeKw('res.partner', 'search', [
-      ['|', ['phone', 'ilike', suffix], ['mobile', 'ilike', suffix]],
-    ], { limit: 1 });
+    partners = await json2('res.partner', 'search_read', {
+      domain: [
+        '|',
+        ['phone', 'ilike', suffix],
+        ['mobile', 'ilike', suffix],
+      ],
+      fields: ['display_name', 'user_id'],
+      limit: 1,
+    });
   } catch (err) {
-    // Odoo 19 eliminó res.partner.mobile: se reintenta solo con phone.
+    // Compatibilidad con instalaciones donde mobile no está disponible.
     if (!/mobile/i.test(err.message)) throw err;
-    ids = await executeKw('res.partner', 'search', [[['phone', 'ilike', suffix]]], { limit: 1 });
+
+    partners = await json2('res.partner', 'search_read', {
+      domain: [['phone', 'ilike', suffix]],
+      fields: ['display_name', 'user_id'],
+      limit: 1,
+    });
   }
-  if (!ids.length) return false;
-  const [partner] = await executeKw('res.partner', 'read', [ids, ['display_name', 'user_id']]);
+
+  const partner = partners[0];
+
+  if (!partner) return false;
+
   return {
-    id: ids[0],
-    name: partner?.display_name || '',
-    userId: partner?.user_id?.[0] || null,
+    id: partner.id,
+    name: partner.display_name || '',
+    userId: partner.user_id?.[0] || null,
   };
 }
 
 let teamCache = null;
 let teamCachedAt = 0;
 
-/** Equipo de ventas configurado (o el primero con líder). */
+/**
+ * Obtiene el equipo comercial configurado.
+ */
 async function getSalesTeam() {
-  if (teamCache && Date.now() - teamCachedAt < 5 * 60 * 1000) return teamCache;
+  if (teamCache && Date.now() - teamCachedAt < 5 * 60 * 1000) {
+    return teamCache;
+  }
+
   const domain = config.odoo.teamId
     ? [['id', '=', config.odoo.teamId]]
     : [['user_id', '!=', false]];
-  const [team] = await executeKw('crm.team', 'search_read', [domain, ['name', 'user_id']], {
+
+  const teams = await json2('crm.team', 'search_read', {
+    domain,
+    fields: ['name', 'user_id'],
     limit: 1,
     order: 'id asc',
   });
+
+  const team = teams[0];
+
   teamCache = team
-    ? { id: team.id, name: team.name, userId: team.user_id?.[0] || null }
+    ? {
+        id: team.id,
+        name: team.name,
+        userId: team.user_id?.[0] || null,
+      }
     : null;
+
   teamCachedAt = Date.now();
+
   return teamCache;
 }
 
 /**
- * Regla de asignación:
- * 1. Si el contacto existe y tiene vendedor (res.partner.user_id), se le asigna.
- * 2. Si no, el lead va al líder del equipo de ventas.
+ * Resuelve el vendedor responsable del lead.
  */
 export async function resolveAssignment(partner) {
   if (partner?.userId) {
-    return { userId: partner.userId, teamId: null, source: 'vendedor del contacto' };
+    return {
+      userId: partner.userId,
+      teamId: null,
+      source: 'vendedor del contacto',
+    };
   }
+
   const team = await getSalesTeam();
+
   if (team?.userId) {
-    return { userId: team.userId, teamId: team.id, source: 'líder del equipo' };
+    return {
+      userId: team.userId,
+      teamId: team.id,
+      source: 'líder del equipo',
+    };
   }
-  return { userId: false, teamId: team?.id || false, source: 'sin asignar' };
+
+  return {
+    userId: false,
+    teamId: team?.id || false,
+    source: 'sin asignar',
+  };
 }
 
-/** Busca un lead ya creado para una entrega de WhatsApp (idempotencia). */
+/**
+ * Busca un lead por referencia de WhatsApp.
+ */
 export async function findLeadByRef(ref) {
   if (!ref) return null;
-  const ids = await executeKw('crm.lead', 'search', [[['description', 'ilike', ref]]], { limit: 1 });
+
+  const ids = await json2('crm.lead', 'search', {
+    domain: [['description', 'ilike', ref]],
+    limit: 1,
+  });
+
   return ids[0] || null;
 }
 
-/** Crea el lead en crm.lead y devuelve su id. */
+/**
+ * Crea un lead en CRM.
+ */
 export async function createLead({
   name,
   phone,
@@ -135,8 +212,7 @@ export async function createLead({
     if (existing) return existing;
   }
 
-  const uid = await authenticate();
-  const tagIds = await resolveTagNames(tags, uid);
+  const tagIds = await resolveTagNames(tags);
 
   const values = {
     name,
@@ -146,58 +222,86 @@ export async function createLead({
     description,
     tag_ids: [[6, 0, tagIds]],
   };
+
   if (userId) values.user_id = userId;
   if (teamId) values.team_id = teamId;
 
-  return executeKw('crm.lead', 'create', [values]);
+  const result = await json2('crm.lead', 'create', {
+    vals_list: [values],
+  });
+
+  const leadId = normalizeId(result);
+
+  if (!leadId) {
+    throw new Error('Odoo no devolvió un ID válido al crear el lead');
+  }
+
+  return leadId;
 }
 
+/**
+ * Obtiene el ID del modelo crm.lead.
+ */
 let crmModelIdCache;
 
-/** ID de ir.model para crm.lead (Odoo 19 exige res_model_id en actividades). */
 async function getCrmModelId() {
   if (crmModelIdCache !== undefined) return crmModelIdCache;
+
   try {
-    const [model] = await executeKw(
-      'ir.model',
-      'search_read',
-      [[['model', '=', 'crm.lead']], ['id']],
-      { limit: 1 }
-    );
-    crmModelIdCache = model?.id || false;
+    const models = await json2('ir.model', 'search_read', {
+      domain: [['model', '=', 'crm.lead']],
+      fields: ['id'],
+      limit: 1,
+    });
+
+    crmModelIdCache = models[0]?.id || false;
   } catch {
     crmModelIdCache = false;
   }
+
   return crmModelIdCache;
 }
 
+/**
+ * Busca el tipo de actividad llamada.
+ */
 let callActivityTypeCache;
 
-/** ID del tipo de actividad "Llamada" de Odoo (o false si no existe). */
 async function getCallActivityTypeId() {
-  if (callActivityTypeCache !== undefined) return callActivityTypeCache;
-  try {
-    const [data] = await executeKw(
-      'ir.model.data',
-      'search_read',
-      [[['module', '=', 'mail'], ['name', '=', 'mail_activity_data_call']], ['res_id']],
-      { limit: 1 }
-    );
-    if (data?.res_id) return (callActivityTypeCache = data.res_id);
-  } catch {
-    // sin permiso para leer ir.model.data: se intenta por nombre
+  if (callActivityTypeCache !== undefined) {
+    return callActivityTypeCache;
   }
+
   try {
-    const [type] = await executeKw(
-      'mail.activity.type',
-      'search_read',
-      [[['name', 'ilike', 'llam']], ['id']],
-      { limit: 1 }
-    );
-    callActivityTypeCache = type?.id || false;
+    const data = await json2('ir.model.data', 'search_read', {
+      domain: [
+        ['module', '=', 'mail'],
+        ['name', '=', 'mail_activity_data_call'],
+      ],
+      fields: ['res_id'],
+      limit: 1,
+    });
+
+    if (data[0]?.res_id) {
+      callActivityTypeCache = data[0].res_id;
+      return callActivityTypeCache;
+    }
+  } catch {
+    // Se intenta buscar por nombre.
+  }
+
+  try {
+    const types = await json2('mail.activity.type', 'search_read', {
+      domain: [['name', 'ilike', 'llam']],
+      fields: ['id'],
+      limit: 1,
+    });
+
+    callActivityTypeCache = types[0]?.id || false;
   } catch {
     callActivityTypeCache = false;
   }
+
   return callActivityTypeCache;
 }
 
@@ -209,39 +313,45 @@ function escapeHtml(value) {
 }
 
 /**
- * Notifica al vendedor asignado: crea una actividad de llamada y publica en el
- * chatter del lead mencionándolo (notificación en Odoo).
+ * Notifica al vendedor mediante actividad y chatter.
  */
-export async function notifyLeadAssignee({ leadId, userId, customerName, phone, source }) {
+export async function notifyLeadAssignee({
+  leadId,
+  userId,
+  customerName,
+  phone,
+  source,
+}) {
   if (!userId || !leadId) return false;
 
-  const [user] = await executeKw('res.users', 'read', [[userId], ['name', 'partner_id', 'email']]);
+  const users = await json2('res.users', 'read', {
+    ids: [userId],
+    fields: ['name', 'partner_id', 'email'],
+  });
+
+  const user = users[0];
+
   const assigneeName = user?.name || `usuario ${userId}`;
   const activityTypeId = await getCallActivityTypeId();
 
   if (activityTypeId) {
-    const activity = {
-      res_id: leadId,
-      user_id: userId,
-      activity_type_id: activityTypeId,
-      summary: `Contactar a ${customerName} por WhatsApp`,
-      date_deadline: new Date().toISOString().slice(0, 10),
-    };
     const modelId = await getCrmModelId();
-    if (modelId) activity.res_model_id = modelId;
-    else activity.res_model = 'crm.lead';
 
-    try {
-      await executeKw('mail.activity', 'create', [activity]);
-    } catch (err) {
-      // Odoo ≤18 no conoce res_model_id: se reintenta con el campo clásico.
-      if (modelId && /res_model_id/i.test(err.message)) {
-        delete activity.res_model_id;
-        activity.res_model = 'crm.lead';
-        await executeKw('mail.activity', 'create', [activity]);
-      } else {
-        throw err;
-      }
+    if (modelId) {
+      const activity = {
+        res_model_id: modelId,
+        res_id: leadId,
+        user_id: userId,
+        activity_type_id: activityTypeId,
+        summary: `Contactar a ${customerName} por WhatsApp`,
+        date_deadline: new Date().toISOString().slice(0, 10),
+      };
+
+      await json2('mail.activity', 'create', {
+        vals_list: [activity],
+      });
+    } else {
+      console.warn('[odoo] No se pudo obtener ir.model para crm.lead');
     }
   }
 
@@ -252,76 +362,59 @@ export async function notifyLeadAssignee({ leadId, userId, customerName, phone, 
     `Asignado por: ${escapeHtml(source)}</p>`,
   ].join('');
 
-  await executeKw('crm.lead', 'message_post', [[leadId]], {
+  await json2('crm.lead', 'message_post', {
+    ids: [leadId],
     body,
     message_type: 'comment',
     subtype_xmlid: 'mail.mt_comment',
     partner_ids: user?.partner_id ? [user.partner_id[0]] : [],
-    body_is_html: true,
   });
 
   return true;
 }
 
-/** Crea (o reutiliza) etiquetas en crm.tag por nombre. */
-async function resolveTagNames(tagNames, uid) {
+/**
+ * Busca o crea etiquetas CRM.
+ */
+async function resolveTagNames(tagNames) {
   if (!tagNames || !tagNames.length) return [];
+
   const ids = [];
+
   for (const name of tagNames) {
-    const found = await executeKw('crm.tag', 'search', [[['name', '=', name]]], { limit: 1 });
+    const found = await json2('crm.tag', 'search', {
+      domain: [['name', '=', name]],
+      limit: 1,
+    });
+
     if (found.length) {
       ids.push(found[0]);
-    } else {
-      try {
-        ids.push(await executeKw('crm.tag', 'create', [{ name }]));
-      } catch {
-        // Sin permisos para crear etiquetas: lo ignoramos y seguimos.
-      }
+      continue;
+    }
+
+    try {
+      const result = await json2('crm.tag', 'create', {
+        vals_list: [{ name }],
+      });
+
+      const tagId = normalizeId(result);
+      if (tagId) ids.push(tagId);
+    } catch (err) {
+      console.warn(`[odoo] No se pudo crear la etiqueta ${name}:`, err.message);
     }
   }
+
   return ids;
 }
 
-/** Añade una nota al lead existente (usado en escalamiento a humano). */
+/**
+ * Añade una nota al chatter de un lead.
+ */
 export async function addNoteToLead(leadId, note) {
-  await executeKw('crm.lead', 'message_post', [[leadId]], {
+  await json2('crm.lead', 'message_post', {
+    ids: [leadId],
     body: note,
     message_type: 'comment',
     subtype_xmlid: 'mail.mt_note',
   });
-}
-
-
-/**
- * Prueba de conexión con Odoo 19 mediante JSON-2.
- * Solo lectura: consulta un ID de crm.lead.
- */
-export async function testJson2Connection() {
-  const { url, db, apiKey } = config.odoo;
-
-  const response = await fetch(`${url}/json/2/crm.lead/search_read`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `bearer ${apiKey}`,
-      'X-Odoo-Database': db,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      domain: [],
-      fields: ['id'],
-      limit: 1,
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`JSON-2 HTTP ${response.status}: ${error}`);
-  }
-
-  const records = await response.json();
-
-  return {
-    connected: true,
-    recordsFound: records.length,
-  };
 }
