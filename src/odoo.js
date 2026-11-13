@@ -290,3 +290,38 @@ export async function addNoteToLead(leadId, note) {
     subtype_xmlid: 'mail.mt_note',
   });
 }
+
+
+/**
+ * Prueba de conexión con Odoo 19 mediante JSON-2.
+ * Solo lectura: consulta un ID de crm.lead.
+ */
+export async function testJson2Connection() {
+  const { url, db, apiKey } = config.odoo;
+
+  const response = await fetch(`${url}/json/2/crm.lead/search_read`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `bearer ${apiKey}`,
+      'X-Odoo-Database': db,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      domain: [],
+      fields: ['id'],
+      limit: 1,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`JSON-2 HTTP ${response.status}: ${error}`);
+  }
+
+  const records = await response.json();
+
+  return {
+    connected: true,
+    recordsFound: records.length,
+  };
+}
