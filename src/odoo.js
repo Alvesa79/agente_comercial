@@ -58,18 +58,41 @@ function normalizeId(result) {
  * Prueba de conexión JSON-2.
  * Solo lectura.
  */
+
 export async function testJson2Connection() {
-  const records = await json2('crm.lead', 'search_read', {
-    domain: [],
-    fields: ['id'],
-    limit: 1,
-  });
+  const models = [
+    'res.partner',
+    'crm.team',
+    'crm.tag',
+    'crm.lead',
+  ];
+
+  const results = {};
+
+  for (const model of models) {
+    try {
+      const count = await json2(model, 'search_count', {
+        domain: [],
+      });
+
+      results[model] = {
+        connected: true,
+        recordsFound: count,
+      };
+    } catch (error) {
+      results[model] = {
+        connected: false,
+        error: error.message,
+      };
+    }
+  }
 
   return {
-    connected: true,
-    recordsFound: records.length,
+    connected: Object.values(results).every(item => item.connected),
+    models: results,
   };
 }
+
 
 /**
  * Busca un contacto por teléfono o móvil.
